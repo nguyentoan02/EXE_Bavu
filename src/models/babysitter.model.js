@@ -6,6 +6,7 @@ const BabysitterSchema = new mongoose.Schema(
         phoneNumber: { type: String },
         email: { type: String },
         certificate: { type: String },
+        photo: { type: String },
     },
     { timestamps: true }
 );
