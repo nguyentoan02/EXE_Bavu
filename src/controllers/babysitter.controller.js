@@ -39,3 +39,42 @@ export const getAllBabysitters = async (req, res) => {
         });
     }
 };
+
+export const updateBabysitter = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, phoneNumber, email, certificate } = req.body;
+
+        const babysitter = await Babysitter.findByIdAndUpdate(
+            id,
+            { name, phoneNumber, email, certificate },
+            { new: true, runValidators: true }
+        );
+
+        if (!babysitter) {
+            return res.status(404).json({ message: "Babysitter not found" });
+        }
+
+        res.json({
+            message: "Babysitter updated successfully",
+            data: babysitter,
+        });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+};
+
+export const deleteBabysitter = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const babysitter = await Babysitter.findByIdAndDelete(id);
+
+        if (!babysitter) {
+            return res.status(404).json({ message: "Babysitter not found" });
+        }
+
+        res.json({ message: "Babysitter deleted successfully" });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+};
