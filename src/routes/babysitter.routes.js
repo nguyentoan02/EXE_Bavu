@@ -5,15 +5,15 @@ import {
     updateBabysitter,
     deleteBabysitter,
 } from "../controllers/babysitter.controller.js";
+import upload from "../middlewares/upload.js";
 
 const router = express.Router();
 
-router.post("/", createBabysitter);
+// Thêm middleware upload.single('photo') để nhận file ảnh
+router.post("/", upload.single("photo"), createBabysitter);
+router.put("/:id", upload.single("photo"), updateBabysitter);
 
 router.get("/", getAllBabysitters);
-
-router.put("/:id", updateBabysitter);
-
 router.delete("/:id", deleteBabysitter);
 
 export default router;
