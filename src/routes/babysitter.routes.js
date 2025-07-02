@@ -4,6 +4,7 @@ import {
     getAllBabysitters,
     updateBabysitter,
     deleteBabysitter,
+    getBabysitterDetail,
 } from "../controllers/babysitter.controller.js";
 import upload from "../middlewares/upload.js";
 
@@ -14,6 +15,7 @@ router.post("/", upload.single("photo"), createBabysitter);
 router.put("/:id", upload.single("photo"), updateBabysitter);
 
 router.get("/", getAllBabysitters);
+router.get("/:id", getBabysitterDetail);
 router.delete("/:id", deleteBabysitter);
 
 export default router;
