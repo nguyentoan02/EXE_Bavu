@@ -5,8 +5,13 @@ const BabysitterSchema = new mongoose.Schema(
         name: { type: String },
         phoneNumber: { type: String },
         email: { type: String },
-        certificate: { type: String },
+        certificate: { type: [String] },
         photo: { type: String },
+        location: { type: String },
+        forte: { type: [String] },
+        feedback: { type: [String] },
+        age: { type: Number },
+        experience: { type: String },
     },
     { timestamps: true }
 );

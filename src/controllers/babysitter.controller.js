@@ -1,28 +1,42 @@
 import Babysitter from "../models/babysitter.model.js";
 
+const toArray = (value) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === "string") return value.split(",").map(s => s.trim()).filter(Boolean);
+    return [];
+};
+
 export const createBabysitter = async (req, res) => {
     try {
-        const { name, phoneNumber, email, certificate } = req.body;
-
-        const exists = await Babysitter.exists({ email });
-        if (exists) {
-            return res.status(400).json({
-                message: "Babysitter already exists with this email",
-            });
-        }
+        const {
+            name,
+            phoneNumber,
+            email,
+            certificate,
+            location,
+            forte,
+            feedback,
+            age,
+            experience,
+        } = req.body;
 
         const babysitter = new Babysitter({
             name,
             phoneNumber,
             email,
-            certificate,
+            certificate: toArray(certificate),
             photo: req.file?.path || "", // Lưu URL ảnh từ Cloudinary
+            location,
+            forte: toArray(forte),
+            feedback: toArray(feedback),
+            age,
+            experience,
         });
 
         await babysitter.save();
 
         res.status(201).json({
-            message: "Babysitter created",
+            message: "Babysitter created successfully",
             data: babysitter,
         });
     } catch (err) {
@@ -33,13 +47,28 @@ export const createBabysitter = async (req, res) => {
 export const updateBabysitter = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, phoneNumber, email, certificate } = req.body;
+        const {
+            name,
+            phoneNumber,
+            email,
+            certificate,
+            location,
+            forte,
+            feedback,
+            age,
+            experience,
+        } = req.body;
 
         const updateData = {
             name,
             phoneNumber,
             email,
-            certificate,
+            certificate: toArray(certificate),
+            location,
+            forte: toArray(forte),
+            feedback: toArray(feedback),
+            age,
+            experience,
         };
 
         if (req.file) {
@@ -86,6 +115,25 @@ export const deleteBabysitter = async (req, res) => {
         }
 
         res.json({ message: "Babysitter deleted successfully" });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+};
+
+export const getBabysitterDetail = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const babysitter = await Babysitter.findById(id);
+
+        if (!babysitter) {
+            return res.status(404).json({ message: "Babysitter not found" });
+        }
+
+        res.json({
+            message: "Babysitter detail retrieved successfully",
+            data: babysitter,
+        });
     } catch (err) {
         res.status(500).json({ message: "Server error", error: err.message });
     }
