@@ -46,12 +46,12 @@ jobs:
               cache-from: type=gha
               cache-to: type=gha,mode=max
 
-   # --- JOB 3: DEPLOY (NO HARD-CODED LOGIC) ---
+   # --- JOB 3: DEPLOY  ---
    deploy:
       needs: [init, build-and-push]
       runs-on: ubuntu-latest
 
-      # This line is critical: It tells GitHub to load the secrets for the correct environment (prod or staging)
+      
       environment: ${{ needs.init.outputs.env_name }}
 
       steps:
