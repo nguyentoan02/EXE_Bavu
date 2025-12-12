@@ -2,7 +2,7 @@ name: Production Deployment (Traefik Integration)
 
 on:
    push:
-      branches: ["master"] # Chỉ chạy khi push code vào nhánh master
+      branches: ["master"]
 
 jobs:
    # --- GIAI ĐOẠN 1: BUILD & PUSH ---
@@ -26,15 +26,21 @@ jobs:
            with:
               context: .
               push: true
-              # Đặt tên theo số thứ tự (Ví dụ: app-bavu:55) để dễ Rollback
+              # Tag theo run_number để versioning
               tags: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_IMAGE_NAME }}:${{ github.run_number }}
               cache-from: type=gha
               cache-to: type=gha,mode=max
 
-   # --- GIAI ĐOẠN 2: DEPLOY LÊN EC2 (VỚI TRAEFIK) ---
+   # --- GIAI ĐOẠN 2: DEPLOY LÊN EC2 ---
    deploy:
       needs: build-and-push
       runs-on: ubuntu-latest
+
+      # === QUAN TRỌNG: Dòng này giúp đọc được secret trong Environment 'production' ===
+      environment:
+         name: production
+         url: https://${{ secrets.DOMAIN_NAME }}
+
       steps:
          - name: Deploy to EC2
            uses: appleboy/ssh-action@v1.0.3
@@ -42,37 +48,41 @@ jobs:
               host: ${{ secrets.EC2_HOST }}
               username: ${{ secrets.EC2_USER }}
               key: ${{ secrets.EC2_SSH_KEY }}
-              port: ${{ secrets.EC2_SSH_PORT }}
+              port: ${{ secrets.EC2_SSH_PORT || '22' }} # Mặc định 22 nếu chưa set port
               script: |
                  # --- 1. THIẾT LẬP BIẾN ---
                  VERSION="${{ github.run_number }}"
                  FULL_IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_IMAGE_NAME }}:$VERSION"
                  CONTAINER_NAME="web-app-production"
-
                  DOMAIN_NAME="${{ secrets.DOMAIN_NAME }}"
                  INTERNAL_PORT="${{ secrets.CONTAINER_INTERNAL_PORT }}"
 
                  echo "🚀 Bắt đầu Deploy Version: $VERSION"
-                 echo "Pw Tên miền: $DOMAIN_NAME"
 
                  # --- 2. KÉO IMAGE MỚI ---
                  docker pull $FULL_IMAGE
 
                  # --- 3. BACKUP CONTAINER CŨ ---
-                 # Nếu container đang chạy, đổi tên thành _backup và dừng lại
                  if [ "$(docker ps -q -f name=$CONTAINER_NAME)" ]; then
                      echo "⚠️ Đang backup container cũ..."
                      docker rename $CONTAINER_NAME "${CONTAINER_NAME}_backup"
                      docker stop "${CONTAINER_NAME}_backup"
                  fi
 
-                 # --- 4. TẠO FILE ENV ---
-                 printf "%s" "${{ secrets.ENV_FILE }}" > .env.production
-                 echo "" >> .env.production
+                 # --- 4. TẠO FILE ENV TỪ SECRET ---
+                 # Xóa file cũ nếu có
+                 rm -f .env.production
+                 # Ghi nội dung secret vào file mới
+                 echo "${{ secrets.ENV_FILE }}" > .env.production
 
+                 # Kiểm tra nhanh xem file có dữ liệu không (không in ra log để bảo mật)
+                 if [ ! -s .env.production ]; then
+                     echo "❌ LỖI: File .env.production bị rỗng. Kiểm tra lại Secret!"
+                     exit 1
+                 fi
 
                  # --- 5. CHẠY CONTAINER MỚI (TRAEFIK MODE) ---
-                 # Lưu ý: --network web_network là bắt buộc để nối với Traefik
+                 echo "🔥 Đang khởi chạy container..."
                  docker run -d \
                    --name $CONTAINER_NAME \
                    --network web_network \
@@ -87,30 +97,25 @@ jobs:
 
                  # --- 6. HEALTH CHECK & ROLLBACK ---
                  echo "fz Đang kiểm tra sức khỏe ứng dụng..."
-                 sleep 15 # Chờ app khởi động
+                 sleep 15 
 
-                 # Kiểm tra xem container có còn sống không
                  if [ "$(docker ps -q -f name=$CONTAINER_NAME)" ]; then
                      echo "✅ DEPLOY THÀNH CÔNG!"
                      
-                     # Xóa backup
+                     # Dọn dẹp
                      docker rm -f "${CONTAINER_NAME}_backup" || true
-                     
-                     # Dọn dẹp image rác
                      docker image prune -a -f --filter "until=24h"
                  else
                      echo "❌ THẤT BẠI! Container bị crash. Đang Rollback..."
                      
-                     # Xóa bản lỗi
                      docker rm -f $CONTAINER_NAME || true
                      
-                     # Khôi phục bản cũ
                      if [ "$(docker ps -a -q -f name=${CONTAINER_NAME}_backup)" ]; then
                          docker rename "${CONTAINER_NAME}_backup" $CONTAINER_NAME
                          docker start $CONTAINER_NAME
                          echo "✅ Đã khôi phục phiên bản cũ."
                      fi
-                     exit 1 # Báo lỗi cho GitHub Actions
+                     exit 1 
                  fi
 
          # --- GỬI MAIL THÔNG BÁO ---
@@ -128,11 +133,8 @@ jobs:
               from: GitHub Actions
               body: |
                  Dự án: ${{ github.repository }}
-                 ------------------------------------------
                  Phiên bản: ${{ github.run_number }}
                  Trạng thái: ${{ job.status }}
                  Tên miền: ${{ secrets.DOMAIN_NAME }}
-                 Người commit: ${{ github.actor }}
-                 Message: "${{ github.event.head_commit.message }}"
                  ------------------------------------------
-                 Kiểm tra log tại: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+                 Log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
