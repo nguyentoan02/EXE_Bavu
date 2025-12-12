@@ -67,7 +67,9 @@ jobs:
                  fi
 
                  # --- 4. TẠO FILE ENV ---
-                 echo "${{ secrets.ENV_FILE }}" > .env.production
+                 printf "%s" "${{ secrets.ENV_FILE }}" > .env.production
+                 echo "" >> .env.production
+
 
                  # --- 5. CHẠY CONTAINER MỚI (TRAEFIK MODE) ---
                  # Lưu ý: --network web_network là bắt buộc để nối với Traefik
