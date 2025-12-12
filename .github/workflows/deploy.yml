@@ -35,8 +35,7 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     
-    # === SỬA LỖI TẠI ĐÂY ===
-    # Chỉ khai báo tên môi trường, không dùng secret trong url
+    # KHÔNG dùng url: ở đây để tránh lỗi "Unrecognized secret"
     environment: 
       name: production
 
@@ -49,36 +48,55 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ secrets.EC2_SSH_PORT || '22' }}
           script: |
-            # --- 1. THIẾT LẬP BIẾN ---
+            # ========================================================
+            # 1. THIẾT LẬP BIẾN & LÀM SẠCH DỮ LIỆU (FIX LỖI KÝ TỰ LẠ)
+            # ========================================================
             VERSION="${{ github.run_number }}"
             FULL_IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_IMAGE_NAME }}:$VERSION"
             CONTAINER_NAME="web-app-production"
-            DOMAIN_NAME="${{ secrets.DOMAIN_NAME }}"
             INTERNAL_PORT="${{ secrets.CONTAINER_INTERNAL_PORT }}"
+            
+            # Lấy domain từ secret và dùng lệnh 'tr' để xóa sạch khoảng trắng, tab, xuống dòng thừa
+            RAW_DOMAIN="${{ secrets.DOMAIN_NAME }}"
+            DOMAIN_NAME=$(echo "$RAW_DOMAIN" | tr -d '[:space:]')
 
             echo "🚀 Bắt đầu Deploy Version: $VERSION"
-            
-            # --- 2. KÉO IMAGE MỚI ---
+            echo "domain sạch: [$DOMAIN_NAME]"
+
+            # ========================================================
+            # 2. KÉO IMAGE & BACKUP
+            # ========================================================
             docker pull $FULL_IMAGE
 
-            # --- 3. BACKUP CONTAINER CŨ ---
             if [ "$(docker ps -q -f name=$CONTAINER_NAME)" ]; then
                 echo "⚠️ Đang backup container cũ..."
                 docker rename $CONTAINER_NAME "${CONTAINER_NAME}_backup"
                 docker stop "${CONTAINER_NAME}_backup"
             fi
 
-            # --- 4. TẠO FILE ENV TỪ SECRET ---
+            # ========================================================
+            # 3. TẠO FILE ENV (FIX LỖI DATABASE URL)
+            # ========================================================
             rm -f .env.production
             echo "${{ secrets.ENV_FILE }}" > .env.production
             
+            # Kiểm tra file env có dữ liệu không
             if [ ! -s .env.production ]; then
                 echo "❌ LỖI: File .env.production bị rỗng. Kiểm tra lại Secret!"
+                # Rollback ngay nếu thiếu env
+                if [ "$(docker ps -a -q -f name=${CONTAINER_NAME}_backup)" ]; then
+                    docker rename "${CONTAINER_NAME}_backup" $CONTAINER_NAME
+                    docker start $CONTAINER_NAME
+                fi
                 exit 1
             fi
 
-            # --- 5. CHẠY CONTAINER MỚI ---
+            # ========================================================
+            # 4. CHẠY CONTAINER MỚI (FIX LỖI TRAEFIK ROUTER)
+            # ========================================================
             echo "🔥 Đang khởi chạy container..."
+            
+            # Lưu ý: Biến DOMAIN_NAME ở đây đã được làm sạch
             docker run -d \
               --name $CONTAINER_NAME \
               --network web_network \
@@ -91,7 +109,9 @@ jobs:
               -l "traefik.http.services.$CONTAINER_NAME.loadbalancer.server.port=$INTERNAL_PORT" \
               $FULL_IMAGE
 
-            # --- 6. HEALTH CHECK & ROLLBACK ---
+            # ========================================================
+            # 5. HEALTH CHECK & ROLLBACK TỰ ĐỘNG
+            # ========================================================
             echo "fz Đang kiểm tra sức khỏe ứng dụng..."
             sleep 15 
 
@@ -102,6 +122,7 @@ jobs:
             else
                 echo "❌ THẤT BẠI! Container bị crash. Đang Rollback..."
                 docker rm -f $CONTAINER_NAME || true
+                
                 if [ "$(docker ps -a -q -f name=${CONTAINER_NAME}_backup)" ]; then
                     docker rename "${CONTAINER_NAME}_backup" $CONTAINER_NAME
                     docker start $CONTAINER_NAME
@@ -110,6 +131,7 @@ jobs:
                 exit 1 
             fi
 
+      # --- GỬI MAIL THÔNG BÁO ---
       - name: Send Email Status
         if: always()
         uses: dawidd6/action-send-mail@v3
