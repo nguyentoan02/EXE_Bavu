@@ -1,27 +1,12 @@
-name: CI/CD Enterprise Pipeline (Clean Secrets)
+name: Production Deployment (Traefik Integration)
 
 on:
    push:
-      branches: ["master", "staging"]
+      branches: ["master"] # Chỉ chạy khi push code vào nhánh master
 
 jobs:
-   # --- JOB 1: ENVIRONMENT CLASSIFICATION ---
-   init:
-      runs-on: ubuntu-latest
-      outputs:
-         env_name: ${{ steps.set_env.outputs.env_name }}
-      steps:
-         - id: set_env
-           run: |
-              if [[ ${{ github.ref }} == 'refs/heads/master' ]]; then
-                echo "env_name=production" >> $GITHUB_OUTPUT
-              else
-                echo "env_name=staging" >> $GITHUB_OUTPUT
-              fi
-
-   # --- JOB 2: BUILD & PUSH ---
+   # --- GIAI ĐOẠN 1: BUILD & PUSH ---
    build-and-push:
-      needs: init
       runs-on: ubuntu-latest
       steps:
          - name: Checkout code
@@ -41,19 +26,15 @@ jobs:
            with:
               context: .
               push: true
-              # Dynamic tag based on environment & build number
-              tags: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_IMAGE_NAME }}:${{ needs.init.outputs.env_name }}-${{ github.run_number }}
+              # Đặt tên theo số thứ tự (Ví dụ: app-bavu:55) để dễ Rollback
+              tags: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_IMAGE_NAME }}:${{ github.run_number }}
               cache-from: type=gha
               cache-to: type=gha,mode=max
 
-   # --- JOB 3: DEPLOY  ---
+   # --- GIAI ĐOẠN 2: DEPLOY LÊN EC2 (VỚI TRAEFIK) ---
    deploy:
-      needs: [init, build-and-push]
+      needs: build-and-push
       runs-on: ubuntu-latest
-
-      
-      environment: ${{ needs.init.outputs.env_name }}
-
       steps:
          - name: Deploy to EC2
            uses: appleboy/ssh-action@v1.0.3
@@ -63,59 +44,74 @@ jobs:
               key: ${{ secrets.EC2_SSH_KEY }}
               port: ${{ secrets.EC2_SSH_PORT }}
               script: |
-                 # --- DECLARE VARIABLES FROM SECRETS ---
-                 ENV_NAME="${{ needs.init.outputs.env_name }}"
-                 IMAGE_TAG="$ENV_NAME-${{ github.run_number }}"
-                 FULL_IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_IMAGE_NAME }}:$IMAGE_TAG"
-                 CONTAINER_NAME="web-app-$ENV_NAME"
+                 # --- 1. THIẾT LẬP BIẾN ---
+                 VERSION="${{ github.run_number }}"
+                 FULL_IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_IMAGE_NAME }}:$VERSION"
+                 CONTAINER_NAME="web-app-production"
 
-                 # --- GET PORT FROM ENVIRONMENT SECRET ---
-                 # No need for any IF statement here
-                 HOST_PORT=${{ secrets.APP_PORT }}
+                 DOMAIN_NAME="${{ secrets.DOMAIN_NAME }}"
+                 INTERNAL_PORT="${{ secrets.CONTAINER_INTERNAL_PORT }}"
 
-                 # Internal container port (should also be a secret for consistency)
-                 INTERNAL_PORT=${{ secrets.CONTAINER_INTERNAL_PORT }}
+                 echo "🚀 Bắt đầu Deploy Version: $VERSION"
+                 echo "Pw Tên miền: $DOMAIN_NAME"
 
-                 echo "🚀 Deploying Image: $IMAGE_TAG"
-                 echo "🔌 Port Mapping: $HOST_PORT:$INTERNAL_PORT"
-
-                 # 1. Pull Image
+                 # --- 2. KÉO IMAGE MỚI ---
                  docker pull $FULL_IMAGE
 
-                 # 2. Backup
+                 # --- 3. BACKUP CONTAINER CŨ ---
+                 # Nếu container đang chạy, đổi tên thành _backup và dừng lại
                  if [ "$(docker ps -q -f name=$CONTAINER_NAME)" ]; then
+                     echo "⚠️ Đang backup container cũ..."
                      docker rename $CONTAINER_NAME "${CONTAINER_NAME}_backup"
                      docker stop "${CONTAINER_NAME}_backup"
                  fi
 
-                 # 3. Create env file (Content of this file is also taken from Environment Secret)
-                 echo "${{ secrets.ENV_FILE }}" > .env.$ENV_NAME
+                 # --- 4. TẠO FILE ENV ---
+                 echo "${{ secrets.ENV_FILE }}" > .env.production
 
-                 # 4. Run Container
+                 # --- 5. CHẠY CONTAINER MỚI (TRAEFIK MODE) ---
+                 # Lưu ý: --network web_network là bắt buộc để nối với Traefik
                  docker run -d \
                    --name $CONTAINER_NAME \
-                   -p $HOST_PORT:$INTERNAL_PORT \
+                   --network web_network \
                    --restart always \
-                   --env-file .env.$ENV_NAME \
+                   --env-file .env.production \
+                   -l "traefik.enable=true" \
+                   -l "traefik.http.routers.$CONTAINER_NAME.rule=Host(\`$DOMAIN_NAME\`)" \
+                   -l "traefik.http.routers.$CONTAINER_NAME.entrypoints=websecure" \
+                   -l "traefik.http.routers.$CONTAINER_NAME.tls.certresolver=myresolver" \
+                   -l "traefik.http.services.$CONTAINER_NAME.loadbalancer.server.port=$INTERNAL_PORT" \
                    $FULL_IMAGE
 
-                 # 5. Health Check & Rollback
-                 sleep 15
+                 # --- 6. HEALTH CHECK & ROLLBACK ---
+                 echo "fz Đang kiểm tra sức khỏe ứng dụng..."
+                 sleep 15 # Chờ app khởi động
+
+                 # Kiểm tra xem container có còn sống không
                  if [ "$(docker ps -q -f name=$CONTAINER_NAME)" ]; then
-                     echo "✅ Success!"
+                     echo "✅ DEPLOY THÀNH CÔNG!"
+                     
+                     # Xóa backup
                      docker rm -f "${CONTAINER_NAME}_backup" || true
+                     
+                     # Dọn dẹp image rác
                      docker image prune -a -f --filter "until=24h"
                  else
-                     echo "❌ Failed! Rolling back..."
+                     echo "❌ THẤT BẠI! Container bị crash. Đang Rollback..."
+                     
+                     # Xóa bản lỗi
                      docker rm -f $CONTAINER_NAME || true
+                     
+                     # Khôi phục bản cũ
                      if [ "$(docker ps -a -q -f name=${CONTAINER_NAME}_backup)" ]; then
                          docker rename "${CONTAINER_NAME}_backup" $CONTAINER_NAME
                          docker start $CONTAINER_NAME
+                         echo "✅ Đã khôi phục phiên bản cũ."
                      fi
-                     exit 1
+                     exit 1 # Báo lỗi cho GitHub Actions
                  fi
 
-         # --- EMAIL NOTIFICATION ---
+         # --- GỬI MAIL THÔNG BÁO ---
          - name: Send Email Status
            if: always()
            uses: dawidd6/action-send-mail@v3
@@ -125,10 +121,16 @@ jobs:
               secure: false
               username: ${{ secrets.MAIL_USERNAME }}
               password: ${{ secrets.MAIL_PASSWORD }}
-              subject: ${{ job.status == 'success' && '✅ DEPLOY SUCCESS' || '❌ DEPLOY FAILED' }} - ${{ needs.init.outputs.env_name }}
+              subject: ${{ job.status == 'success' && '✅ DEPLOY SUCCESS' || '❌ DEPLOY FAILED' }} - ${{ github.repository }}
               to: nvtvlog234@gmail.com
               from: GitHub Actions
               body: |
-                 Environment: ${{ needs.init.outputs.env_name }}
-                 Version: ${{ github.run_number }}
-                 Status: ${{ job.status }}
+                 Dự án: ${{ github.repository }}
+                 ------------------------------------------
+                 Phiên bản: ${{ github.run_number }}
+                 Trạng thái: ${{ job.status }}
+                 Tên miền: ${{ secrets.DOMAIN_NAME }}
+                 Người commit: ${{ github.actor }}
+                 Message: "${{ github.event.head_commit.message }}"
+                 ------------------------------------------
+                 Kiểm tra log tại: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
